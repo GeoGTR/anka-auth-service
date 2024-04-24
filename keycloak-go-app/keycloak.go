@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Nerzal/gocloak/v11"
+	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
 )
 
@@ -23,6 +25,11 @@ type keycloakCreds struct {
 	grantType    string
 }
 
+type TokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 var kCreds = &keycloakCreds{
 	hostname:     goDotEnvVariable("KEYCLOAK_HOSTNAME"),
 	clientId:     goDotEnvVariable("KEYCLOAK_CLIENT_ID"),
@@ -33,35 +40,37 @@ var kCreds = &keycloakCreds{
 
 func keycloakClientLogin(username string, password string) (string, string, error) {
 
-	var keycloakClientLoginCreds = &keycloakCreds{
-		username: username,
-		password: password,
-	}
+	kUrl := "https://keycloak.teletek.net.tr/realms/Teletek/protocol/openid-connect/token"
 
-	keycloakClient := gocloak.NewClient(kCreds.hostname)
-	restyClient := keycloakClient.RestyClient()
-	restyClient.SetDebug(true)
+	data := url.Values{}
+	data.Set("client_id", kCreds.clientId)
+	data.Set("client_secret", kCreds.clientSecret)
+	data.Set("username", username)
+	data.Set("password", password)
+	data.Set("grant_type", kCreds.grantType)
 
-	kCTX := context.Background()
-
-	jwt, err := keycloakClient.GetToken(
-		kCTX,
-		kCreds.realm,
-		gocloak.TokenOptions{
-			ClientID:     &kCreds.clientId,
-			ClientSecret: &kCreds.clientSecret,
-			Username:     &keycloakClientLoginCreds.username,
-			Password:     &keycloakClientLoginCreds.password,
-			GrantType:    &kCreds.grantType,
-		},
-	)
+	client := resty.New()
+	client.SetDebug(true)
+	resp, err := client.R().
+		SetHeader("Content-Type", "application/x-www-form-urlencoded").
+		SetBody(data.Encode()).
+		Post(kUrl)
 
 	if err != nil {
-		log.Error().Msgf("%v", "keycloakClient.Login() Invalid credentials", err)
 		return "", "", err
 	}
 
-	return jwt.AccessToken, jwt.RefreshToken, nil
+	if resp.StatusCode() != 200 {
+		return "", "", fmt.Errorf("unexpected status code: %d", resp.StatusCode())
+	}
+
+	var tokenResponse TokenResponse
+	err = json.Unmarshal(resp.Body(), &tokenResponse)
+	if err != nil {
+		return "", "", err
+	}
+
+	return tokenResponse.AccessToken, tokenResponse.RefreshToken, nil
 }
 
 func keycloakRetrospectToken(accessToken string) (bool, error) {
